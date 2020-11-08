@@ -1,5 +1,6 @@
 import json
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
 
@@ -57,6 +58,44 @@ class SignalInformation:
     @path.setter
     def path(self, path):
         self._path = path
+
+
+class Connection:
+    def __init__(self, input, output, signal_power, ):
+        self._input = input
+        self._output = output
+        self._signal_power = signal_power
+        self._latency = 0
+        self._snr = 0
+
+    @property
+    def input(self):
+        return self._input
+
+    @property
+    def output(self):
+        return self._output
+
+    @property
+    def signal_power(self):
+        return self._signal_power
+
+    @property
+    def latency(self):
+        return self._latency
+
+    @property
+    def snr(self):
+        return self._snr
+
+    @latency.setter
+    def latency(self, latency):
+        if latency >= 0:
+            self._latency = latency
+
+    @snr.setter
+    def snr(self, snr):
+        self._snr = snr
 
 
 class Node:
@@ -150,6 +189,7 @@ class Network:
     def __init__(self, input):
         self._nodes = {}
         self._lines = {}
+        self._weighted_paths = pd.DataFrame()
 
         with open(input, "r") as jsonInput:
             loaded_nodes = json.load(jsonInput)
@@ -178,12 +218,14 @@ class Network:
                 self.lines[line_label].successive[node] = current_node
                 self.lines[line_label].successive[neigh] = self.nodes[neigh]
 
+    # Start the propagation of the signal
     def propagate(self, signal):
         # propagate the signal starting from the first node of the path
         first_node = self.nodes[signal.path[0]]
         propagated_signal_info = first_node.propagate(signal)
         return propagated_signal_info
 
+    # Find all the paths between source and destination node
     def find_paths(self, source, dest):
         all_paths = [[] for i in range(len(self.nodes)-1)]
         found_path = []
@@ -194,14 +236,46 @@ class Network:
             found_path.append(source+dest)
         for i in range(len(self.nodes)-2):
             for path in all_paths[i]:
-                for line in lines:
-                    if path[-1] == line[0] and line[1] not in path:
-                        new_path = path+line[1]
-                        all_paths[i+1].append(new_path)
-                        if new_path[0] == source and new_path[-1] == dest:
-                            found_path.append(new_path)
+                all_paths[i + 1] += [path + line[1] for line in lines if ((path[-1] == line[0]) & (line[1] not in path))]
+        for paths in all_paths[1:]:
+            for path in paths:
+                if path[0] == source and path[-1] == dest:
+                    found_path.append(path)
         return found_path
 
+    # fill the value of snr and latency in a list of Connection objects
+    def stream(self, connections, filter_by_snr=False):
+        for conn in connections:
+            df = pd.DataFrame(columns=["path", "snr", "latency"])
+            available_paths = self.find_paths(conn.input, conn.output)
+            if len(available_paths) == 0:
+                conn.latency = 0
+                conn.snr = None
+                continue
+
+            for path in available_paths:
+                sig = SignalInformation(conn.signal_power, path)
+                sig = self.propagate(sig)
+                df = df.append({"path": path,
+                           "snr": 10 * np.log10(sig.signal_power / sig.noise_power),
+                           'latency': sig.latency}, ignore_index=True)
+
+            # check if there are available paths
+            if df.empty:
+                conn.latency = 0
+                conn.snr = None
+                continue
+
+            if filter_by_snr:
+                best_path = df[df.snr == df.snr.max()]
+            else:
+                # otherwise filter by latency
+                best_path = df[df.latency == df.latency.min()]
+
+            conn.latency = best_path.latency.values[0]
+            conn.snr = best_path.snr.values[0]
+
+    # Draw a graphical representation of the network
     def draw(self):
         for node in self.nodes:
             current_node = self.nodes[node]
@@ -213,6 +287,59 @@ class Network:
                 plt.plot([pos[0], npos[0]], [pos[1], npos[1]], "g")
         plt.show()
 
+    # Generate a weighted graph of the network
+    def generate_weighted_paths(self):
+        nodes = self.nodes
+        found_paths = []
+        latencies = []
+        noises = []
+        snrs = []
+
+        for node1 in nodes:
+            for node2 in nodes:
+                if node1 != node2:
+                    paths = self.find_paths(node1, node2)
+                    for path in paths:
+                        path_string = ""
+                        for node in path:
+                            path_string += node + "->"
+                        found_paths.append(path_string[:-2])
+                        # Create a new signal
+                        sig = SignalInformation(1e-3, path)
+                        sig_info = self.propagate(sig)
+                        latencies.append(sig_info.latency)
+                        noises.append(sig_info.noise_power)
+                        snr = 10 * np.log10(sig_info.signal_power / sig_info.noise_power)
+                        snrs.append(snr)
+        self._weighted_paths["paths"] = found_paths
+        self._weighted_paths["latency"] = latencies
+        self._weighted_paths["noise"] = noises
+        self._weighted_paths["snr"] = snrs
+
+    # find the path with best snr in the precalculated weighted graph
+    def find_best_snr(self, source, dest):
+        wp = self.weighted_paths
+        if wp.empty:
+            self.generate_weighted_paths()
+        path = wp[(wp.paths.str[0] == source) & (wp.paths.str[-1] == dest)]
+        if path.empty:
+            return None
+        else:
+            path = path[path.snr == path.snr.max()]
+            return path.paths.values[0]
+
+    # find the path with best snr in the precalculated weighted graph
+    def find_best_latency(self, source, dest):
+        wp = self.weighted_paths
+        if wp.empty:
+            self.generate_weighted_paths()
+        path = wp[(wp.paths.str[0] == source) & (wp.paths.str[-1] == dest)]
+        if path.empty:
+            return None
+        else:
+            path = path[path.latency == path.latency.min()]
+            return path.paths.values[0]
+
     @property
     def nodes(self):
         return self._nodes
@@ -220,6 +347,10 @@ class Network:
     @property
     def lines(self):
         return self._lines
+
+    @property
+    def weighted_paths(self):
+        return self._weighted_paths
 
 
 

@@ -1,35 +1,29 @@
 import pandas as pd
-import numpy as np
+import matplotlib.pyplot as plt
+import random
 from include import virtualnet as vn
-
-df = pd.DataFrame()
-foundPaths = []
-latencies = []
-noises = []
-snrs = []
 
 net = vn.Network("./resources/node.json")
 net.connect()
+connection_data = pd.DataFrame(columns=["path", "snr", "latency"])
+connections = []
+nodes = list(net.nodes.keys())
 
-for node1 in net.nodes:
-    for node2 in net.nodes:
-        if node1 != node2:
-            paths = net.find_paths(node1, node2)
-            for path in paths:
-                path_string = ""
-                for node in path:
-                    path_string += node + "->"
-                foundPaths.append(path_string[:-2])
-                # Create a new signal
-                sig = vn.SignalInformation(1e-3, path)
-                sigInfo = net.propagate(sig)
-                latencies.append(sigInfo.latency)
-                noises.append(sigInfo.noise_power)
-                snr = 10 * np.log10(sigInfo.signal_power / sigInfo.noise_power)
-                snrs.append(snr)
-df["paths"] = foundPaths
-df["latency"] = latencies
-df["noise"] = noises
-df["snr"] = snrs
-print(df)
-net.draw()
+for i in range(100):
+    connections.append(vn.Connection(random.choice(nodes), random.choice(nodes), 1))
+
+net.stream(connections[:50], False)
+net.stream(connections[50:], True)
+
+for conn in connections:
+    if conn.snr is not None:
+        connection_data = connection_data.append({"path": f"{conn.input}->{conn.output}",
+                                                  "snr": conn.snr,
+                                                  "latency": conn.latency}, ignore_index=True)
+plt.subplot(121)
+plt.xticks([])
+plt.plot(connection_data.path, connection_data.snr, "go")
+plt.subplot(122)
+plt.xticks([])
+plt.plot(connection_data.path, connection_data.latency, "ro")
+plt.show()
