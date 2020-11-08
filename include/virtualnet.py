@@ -147,6 +147,7 @@ class Line:
         self._label = label
         self._length = length
         self._successive = {}
+        self._free = True
 
     def latency_generation(self):
         LIGHTSPEED2_3 = 199861638.67
@@ -183,6 +184,14 @@ class Line:
     @successive.setter
     def successive(self, successive):
         self._successive = successive
+
+    @property
+    def free(self):
+        return self._free
+
+    @free.setter
+    def free(self, free):
+        self._free = free
 
 
 class Network:
@@ -245,6 +254,7 @@ class Network:
 
     # fill the value of snr and latency in a list of Connection objects
     def stream(self, connections, filter_by_snr=False):
+        lines = self.lines
         for conn in connections:
             df = pd.DataFrame(columns=["path", "snr", "latency"])
             available_paths = self.find_paths(conn.input, conn.output)
@@ -254,8 +264,20 @@ class Network:
                 continue
 
             for path in available_paths:
+                # check if the path is free
+                free_path = True
+                for i in range(len(path)-1):
+                    line_label = path[i]+path[i+1]
+                    if not lines[line_label].free:
+                        free_path = False
+                        break
+                # don't add the path in the available list if the path is not free
+                if not free_path:
+                    continue
+
                 sig = SignalInformation(conn.signal_power, path)
                 sig = self.propagate(sig)
+
                 df = df.append({"path": path,
                            "snr": 10 * np.log10(sig.signal_power / sig.noise_power),
                            'latency': sig.latency}, ignore_index=True)
@@ -271,6 +293,12 @@ class Network:
             else:
                 # otherwise filter by latency
                 best_path = df[df.latency == df.latency.min()]
+
+            # Set the lines in the path as occupied
+            path = best_path.path.values[0]
+            for i in range(len(path)-1):
+                line_label = path[i] + path[i + 1]
+                lines[line_label].free = False
 
             conn.latency = best_path.latency.values[0]
             conn.snr = best_path.snr.values[0]
@@ -321,24 +349,71 @@ class Network:
         wp = self.weighted_paths
         if wp.empty:
             self.generate_weighted_paths()
-        path = wp[(wp.paths.str[0] == source) & (wp.paths.str[-1] == dest)]
-        if path.empty:
+        paths = wp[(wp.paths.str[0] == source) & (wp.paths.str[-1] == dest)]
+        if paths.empty:
             return None
-        else:
-            path = path[path.snr == path.snr.max()]
-            return path.paths.values[0]
+
+        # sort the paths by snr in order to be able to take the first available path
+        paths = paths.sort_values(by=["snr"], ascending=False)
+        av_paths = paths.paths.values
+        lines = self._lines
+
+        found = False
+        count = 0
+        for path in av_paths:
+            current_path = path.replace("->", "")
+            free_path = True
+            # check if the path is free
+            for i in range(len(current_path)-1):
+                line_label = current_path[i] + current_path[i + 1]
+                if not lines[line_label].free:
+                    free_path = False
+                    break
+
+            if free_path:
+                # stop searching since paths are sorted
+                found = True
+                break
+            count += 1
+
+        if found:
+            return av_paths[count]
+        return None
 
     # find the path with best snr in the precalculated weighted graph
     def find_best_latency(self, source, dest):
         wp = self.weighted_paths
         if wp.empty:
             self.generate_weighted_paths()
-        path = wp[(wp.paths.str[0] == source) & (wp.paths.str[-1] == dest)]
-        if path.empty:
+        paths = wp[(wp.paths.str[0] == source) & (wp.paths.str[-1] == dest)]
+        if paths.empty:
             return None
-        else:
-            path = path[path.latency == path.latency.min()]
-            return path.paths.values[0]
+
+        # sort by latency in order to be able to take the first free path
+        paths = paths.sort_values(by=["latency"])
+        av_paths = paths.paths.values
+        lines = self._lines
+
+        found = False
+        count = 0
+        for path in av_paths:
+            current_path = path.replace("->", "")
+            free_path = True
+            # check if the path is free
+            for i in range(len(current_path)-1):
+                line_label = current_path[i] + current_path[i + 1]
+                if not lines[line_label].free:
+                    free_path = False
+                    break
+
+            if free_path:
+                # stop searching since path are sorted
+                found = True
+                break
+            count += 1
+        if found:
+            return av_paths[count]
+        return None
 
     @property
     def nodes(self):
