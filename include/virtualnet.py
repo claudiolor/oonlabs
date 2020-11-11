@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from include.science_utils import SignalUtils as su
+
 
 class SignalInformation:
     def __init__(self, signal_power, path):
@@ -150,11 +152,10 @@ class Line:
         self._free = True
 
     def latency_generation(self):
-        LIGHTSPEED2_3 = 199861638.67
-        return self.length / LIGHTSPEED2_3
+        return su.latency(self.length)
 
     def noise_generation(self, signal_power):
-        return 1e-3 * signal_power * self._length
+        return su.noise(signal_power, self.length)
 
     def propagate(self, signal):
         node = self.successive[signal.path[0]]
@@ -256,52 +257,29 @@ class Network:
     def stream(self, connections, filter_by_snr=False):
         lines = self.lines
         for conn in connections:
-            df = pd.DataFrame(columns=["path", "snr", "latency"])
-            available_paths = self.find_paths(conn.input, conn.output)
-            if len(available_paths) == 0:
-                conn.latency = 0
-                conn.snr = None
-                continue
-
-            for path in available_paths:
-                # check if the path is free
-                free_path = True
-                for i in range(len(path)-1):
-                    line_label = path[i]+path[i+1]
-                    if not lines[line_label].free:
-                        free_path = False
-                        break
-                # don't add the path in the available list if the path is not free
-                if not free_path:
-                    continue
-
-                sig = SignalInformation(conn.signal_power, path)
-                sig = self.propagate(sig)
-
-                df = df.append({"path": path,
-                           "snr": 10 * np.log10(sig.signal_power / sig.noise_power),
-                           'latency': sig.latency}, ignore_index=True)
+            if filter_by_snr:
+                found_path = self.find_best_snr(conn.input, conn.output)
+            else:
+                found_path = self.find_best_latency(conn.input, conn.output)
 
             # check if there are available paths
-            if df.empty:
+            if found_path is None:
                 conn.latency = 0
                 conn.snr = None
                 continue
 
-            if filter_by_snr:
-                best_path = df[df.snr == df.snr.max()]
-            else:
-                # otherwise filter by latency
-                best_path = df[df.latency == df.latency.min()]
-
             # Set the lines in the path as occupied
-            path = best_path.path.values[0]
-            for i in range(len(path)-1):
-                line_label = path[i] + path[i + 1]
+            for i in range(len(found_path)-1):
+                line_label = found_path[i] + found_path[i + 1]
                 lines[line_label].free = False
 
-            conn.latency = best_path.latency.values[0]
-            conn.snr = best_path.snr.values[0]
+            # Start the transmission of the signal
+            sig = SignalInformation(conn.signal_power, found_path)
+            sig = self.propagate(sig)
+
+            # Update the values in connection
+            conn.latency = sig.latency
+            conn.snr = su.snr(sig.signal_power, sig.noise_power)
 
     # Draw a graphical representation of the network
     def draw(self):
@@ -337,7 +315,7 @@ class Network:
                         sig_info = self.propagate(sig)
                         latencies.append(sig_info.latency)
                         noises.append(sig_info.noise_power)
-                        snr = 10 * np.log10(sig_info.signal_power / sig_info.noise_power)
+                        snr = su.snr(sig_info.signal_power, sig_info.noise_power)
                         snrs.append(snr)
         self._weighted_paths["paths"] = found_paths
         self._weighted_paths["latency"] = latencies
@@ -377,7 +355,7 @@ class Network:
             count += 1
 
         if found:
-            return av_paths[count]
+            return av_paths[count].replace("->", "")
         return None
 
     # find the path with best snr in the precalculated weighted graph
@@ -412,7 +390,7 @@ class Network:
                 break
             count += 1
         if found:
-            return av_paths[count]
+            return av_paths[count].replace("->", "")
         return None
 
     @property
