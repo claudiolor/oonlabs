@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from include.science_utils import SignalUtils as su
+from include.parameters import Parameters as const
 
 
 class SignalInformation:
@@ -60,6 +61,12 @@ class SignalInformation:
     @path.setter
     def path(self, path):
         self._path = path
+
+
+class Lightpath(SignalInformation):
+    def __init__(self, signal_power, path, channel):
+        self.channel = channel
+        super(Lightpath, self).__init__(signal_power, path)
 
 
 class Connection:
@@ -149,7 +156,7 @@ class Line:
         self._label = label
         self._length = length
         self._successive = {}
-        self._free = True
+        self._free = [True] * const.N_CHANNELS
 
     def latency_generation(self):
         return su.latency(self.length)
@@ -162,6 +169,9 @@ class Line:
         # work out the latency and the noise introduced by the current line
         signal.latency_increment(self.latency_generation())
         signal.signal_noise_increment(self.noise_generation(signal.signal_power))
+        # set the channel as occupied if the passed object is a lighpath
+        if hasattr(signal, "channel"):
+            self.free[signal.channel-1] = False
         # propagate the signal on the node on the other side of the line
         node.propagate(signal)
         return signal
@@ -199,7 +209,8 @@ class Network:
     def __init__(self, input):
         self._nodes = {}
         self._lines = {}
-        self._weighted_paths = pd.DataFrame()
+        self._weighted_paths = pd.DataFrame(columns=["paths", "latency", "noise", "snr"])
+        self._route_space = pd.DataFrame(columns=["paths"]+[f"Ch{i+1}" for i in range(const.N_CHANNELS)])
 
         with open(input, "r") as jsonInput:
             loaded_nodes = json.load(jsonInput)
@@ -268,14 +279,23 @@ class Network:
                 conn.snr = None
                 continue
 
-            # Set the lines in the path as occupied
-            for i in range(len(found_path)-1):
-                line_label = found_path[i] + found_path[i + 1]
-                lines[line_label].free = False
+            # Manually unpack the result in order to handle the None case
+            channel = found_path[1]
+            found_path = found_path[0]
 
-            # Start the transmission of the signal
-            sig = SignalInformation(conn.signal_power, found_path)
+            found_path_str = found_path.replace("->", "")
+
+            # Start the signal propagation and lock the lines
+            sig = Lightpath(conn.signal_power, found_path_str, channel)
             sig = self.propagate(sig)
+
+            # Set all the lines involving the path as occupied
+            rs = self.route_space
+            for i in range(len(found_path_str)-1):
+                involved_paths = rs[(rs.paths.str.find(f"{found_path_str[i]}->{found_path_str[i+1]}") >= 0)]
+                for path_index, path in involved_paths.iterrows():
+                    # Set the path as occupied
+                    rs.at[path_index, f"Ch{channel}"] = False
 
             # Update the values in connection
             conn.latency = sig.latency
@@ -294,12 +314,10 @@ class Network:
         plt.show()
 
     # Generate a weighted graph of the network
-    def generate_weighted_paths(self):
+    def generate_data_structures(self):
         nodes = self.nodes
-        found_paths = []
-        latencies = []
-        noises = []
-        snrs = []
+        weighted_paths = []
+        route_space = []
 
         for node1 in nodes:
             for node2 in nodes:
@@ -309,24 +327,54 @@ class Network:
                         path_string = ""
                         for node in path:
                             path_string += node + "->"
-                        found_paths.append(path_string[:-2])
                         # Create a new signal
                         sig = SignalInformation(1e-3, path)
                         sig_info = self.propagate(sig)
-                        latencies.append(sig_info.latency)
-                        noises.append(sig_info.noise_power)
-                        snr = su.snr(sig_info.signal_power, sig_info.noise_power)
-                        snrs.append(snr)
-        self._weighted_paths["paths"] = found_paths
-        self._weighted_paths["latency"] = latencies
-        self._weighted_paths["noise"] = noises
-        self._weighted_paths["snr"] = snrs
+                        curr_path = path_string[:-2]
+                        weighted_paths.append({
+                            "paths": curr_path,
+                            "latency": sig_info.latency,
+                            "noise": sig_info.noise_power,
+                            "snr": su.snr(sig_info.signal_power, sig_info.noise_power)
+                        })
+
+                        # Add record in route space for line availability
+                        route_space.append({**{
+                            "paths": curr_path
+                        }, **{
+                            f"Ch{i+1}": True for i in range(const.N_CHANNELS)
+                        }})
+
+        # Create the new dataframe from the lists
+        self._weighted_paths = pd.DataFrame(weighted_paths)
+        self._route_space = pd.DataFrame(route_space)
+
+    def __select_first_available_path(self, av_paths):
+        count = 0
+        channel = 0
+        for path in av_paths:
+            path_state = self.route_space[(self.route_space.paths == path)]
+            # check if the path is free
+            for c in range(1, const.N_CHANNELS + 1):
+                if path_state[f"Ch{c}"].values[0]:
+                    channel = c
+                    break
+
+            if channel > 0:
+                # stop searching since paths are sorted
+                break
+            count += 1
+
+        if channel > 0:
+            return av_paths[count], channel
+        return None
 
     # find the path with best snr in the precalculated weighted graph
     def find_best_snr(self, source, dest):
+        if self.weighted_paths.empty:
+            self.generate_data_structures()
         wp = self.weighted_paths
-        if wp.empty:
-            self.generate_weighted_paths()
+
         paths = wp[(wp.paths.str[0] == source) & (wp.paths.str[-1] == dest)]
         if paths.empty:
             return None
@@ -334,35 +382,14 @@ class Network:
         # sort the paths by snr in order to be able to take the first available path
         paths = paths.sort_values(by=["snr"], ascending=False)
         av_paths = paths.paths.values
-        lines = self._lines
-
-        found = False
-        count = 0
-        for path in av_paths:
-            current_path = path.replace("->", "")
-            free_path = True
-            # check if the path is free
-            for i in range(len(current_path)-1):
-                line_label = current_path[i] + current_path[i + 1]
-                if not lines[line_label].free:
-                    free_path = False
-                    break
-
-            if free_path:
-                # stop searching since paths are sorted
-                found = True
-                break
-            count += 1
-
-        if found:
-            return av_paths[count].replace("->", "")
-        return None
+        return self.__select_first_available_path(av_paths)
 
     # find the path with best snr in the precalculated weighted graph
     def find_best_latency(self, source, dest):
+        if self.weighted_paths.empty:
+            self.generate_data_structures()
         wp = self.weighted_paths
-        if wp.empty:
-            self.generate_weighted_paths()
+
         paths = wp[(wp.paths.str[0] == source) & (wp.paths.str[-1] == dest)]
         if paths.empty:
             return None
@@ -370,28 +397,7 @@ class Network:
         # sort by latency in order to be able to take the first free path
         paths = paths.sort_values(by=["latency"])
         av_paths = paths.paths.values
-        lines = self._lines
-
-        found = False
-        count = 0
-        for path in av_paths:
-            current_path = path.replace("->", "")
-            free_path = True
-            # check if the path is free
-            for i in range(len(current_path)-1):
-                line_label = current_path[i] + current_path[i + 1]
-                if not lines[line_label].free:
-                    free_path = False
-                    break
-
-            if free_path:
-                # stop searching since path are sorted
-                found = True
-                break
-            count += 1
-        if found:
-            return av_paths[count].replace("->", "")
-        return None
+        return self.__select_first_available_path(av_paths)
 
     @property
     def nodes(self):
@@ -404,6 +410,10 @@ class Network:
     @property
     def weighted_paths(self):
         return self._weighted_paths
+
+    @property
+    def route_space(self):
+        return self._route_space
 
 
 
