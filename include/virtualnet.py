@@ -113,6 +113,7 @@ class Node:
         self._position = input_dict["position"]
         self._connected_nodes = input_dict["connected_nodes"]
         self._successive = {}
+        self._switching_matrix = {}
 
     def propagate(self, signal):
         path = signal.path
@@ -149,6 +150,14 @@ class Node:
     @successive.setter
     def successive(self, successive):
         self._successive = successive
+
+    @property
+    def switching_matrix(self):
+        return self._switching_matrix
+
+    @switching_matrix.setter
+    def switching_matrix(self, switching_matrix):
+        self._switching_matrix = switching_matrix
 
 
 class Line:
@@ -233,7 +242,10 @@ class Network:
     def connect(self):
         for node in self.nodes:
             current_node = self.nodes[node]
+            switching_matrix = current_node.switching_matrix
             for neigh in current_node.connected_nodes:
+                # Work out a portion of the switching matrix of the node
+                switching_matrix[neigh] = {n:[(n != neigh) for i in range(const.N_CHANNELS)] for n in current_node.connected_nodes}
                 line_label = node + neigh
                 current_node.successive[line_label] = self.lines[line_label]
                 self.lines[line_label].successive[node] = current_node
@@ -289,13 +301,18 @@ class Network:
             sig = Lightpath(conn.signal_power, found_path_str, channel)
             sig = self.propagate(sig)
 
-            # Set all the lines involving the path as occupied
+            # Build a new route space datastructure
+            route_space = []
             rs = self.route_space
-            for i in range(len(found_path_str)-1):
-                involved_paths = rs[(rs.paths.str.find(f"{found_path_str[i]}->{found_path_str[i+1]}") >= 0)]
-                for path_index, path in involved_paths.iterrows():
-                    # Set the path as occupied
-                    rs.at[path_index, f"Ch{channel}"] = False
+            for path in rs.paths:
+                path_str = path.replace("->", "")
+                ch_availability = self.__return_path_availability(path_str)
+                route_space.append({**{
+                    "paths": path
+                }, **{
+                    f"Ch{i + 1}": ch_availability[i] for i in range(const.N_CHANNELS)
+                }})
+            self._route_space = pd.DataFrame(route_space)
 
             # Update the values in connection
             conn.latency = sig.latency
@@ -339,15 +356,27 @@ class Network:
                         })
 
                         # Add record in route space for line availability
+                        ch_availability = self.__return_path_availability(path)
                         route_space.append({**{
                             "paths": curr_path
                         }, **{
-                            f"Ch{i+1}": True for i in range(const.N_CHANNELS)
+                            f"Ch{i+1}": ch_availability[i] for i in range(const.N_CHANNELS)
                         }})
 
         # Create the new dataframe from the lists
         self._weighted_paths = pd.DataFrame(weighted_paths)
         self._route_space = pd.DataFrame(route_space)
+
+    # This method perform the logical and operation between the switching matrix of the traversed switching nodes
+    # and the availability matrix of the traversed lines
+    def __return_path_availability(self, path):
+        availability = [True for i in range(const.N_CHANNELS)]
+        path_len = len(path)
+        for i in range(path_len-1):
+            if 0 < i < (path_len - 1):
+                availability = np.logical_and(availability, self.nodes[path[i]].switching_matrix[path[i-1]][path[i+1]])
+            availability = np.logical_and(availability, self.lines[path[i]+path[i+1]].free)
+        return availability
 
     def __select_first_available_path(self, av_paths):
         count = 0
