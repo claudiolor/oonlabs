@@ -2,6 +2,7 @@ import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import copy
 
 from include.science_utils import SignalUtils as su
 from include.parameters import Parameters as const
@@ -112,16 +113,26 @@ class Node:
         self._label = label
         self._position = input_dict["position"]
         self._connected_nodes = input_dict["connected_nodes"]
-        self._successive = {}
         self._switching_matrix = {}
+        self._successive = {}
 
-    def propagate(self, signal):
+    def propagate(self, signal, previous_node=None):
         path = signal.path
         if len(path) > 1:
             line_label = path[:2]
             line = self.successive[line_label]
             # remove the node from the path
             signal.cross_node()
+            # update switching matrix if we are streaming
+            if hasattr(signal, "channel") and previous_node is not None:
+                sm_row = self.switching_matrix[previous_node][line_label[1]]
+                channel = signal.channel-1
+                # update the current channel
+                sm_row[channel] = 0
+                if channel > 0:
+                    sm_row[channel-1] = 0
+                if channel < const.N_CHANNELS-1:
+                    sm_row[channel+1] = 0
             # propagate the signal to the right line
             line.propagate(signal)
         return signal
@@ -165,7 +176,7 @@ class Line:
         self._label = label
         self._length = length
         self._successive = {}
-        self._free = [True] * const.N_CHANNELS
+        self._free = [1] * const.N_CHANNELS
 
     def latency_generation(self):
         return su.latency(self.length)
@@ -180,9 +191,9 @@ class Line:
         signal.signal_noise_increment(self.noise_generation(signal.signal_power))
         # set the channel as occupied if the passed object is a lighpath
         if hasattr(signal, "channel"):
-            self.free[signal.channel-1] = False
+            self.free[signal.channel-1] = 0
         # propagate the signal on the node on the other side of the line
-        node.propagate(signal)
+        node.propagate(signal, previous_node=self.label[0])
         return signal
 
     @property
@@ -220,6 +231,7 @@ class Network:
         self._lines = {}
         self._weighted_paths = pd.DataFrame(columns=["paths", "latency", "noise", "snr"])
         self._route_space = pd.DataFrame(columns=["paths"]+[f"Ch{i+1}" for i in range(const.N_CHANNELS)])
+        self._switching_matrices = {}
 
         with open(input, "r") as jsonInput:
             loaded_nodes = json.load(jsonInput)
@@ -227,7 +239,8 @@ class Network:
         for node in loaded_nodes:
             current_node = loaded_nodes[node]
             # create and append the new node in the dictionary
-            self._nodes[node] = Node(node, current_node)
+            self._nodes[node] = Node(node, current_node);
+            self._switching_matrices[node] = current_node["switching_matrix"]
             # create a link for each adiacency
             for n in current_node["connected_nodes"]:
                 neigh = loaded_nodes[n]
@@ -242,10 +255,8 @@ class Network:
     def connect(self):
         for node in self.nodes:
             current_node = self.nodes[node]
-            switching_matrix = current_node.switching_matrix
+            current_node.switching_matrix = copy.deepcopy(self._switching_matrices[node])
             for neigh in current_node.connected_nodes:
-                # Work out a portion of the switching matrix of the node
-                switching_matrix[neigh] = {n:[(n != neigh) for i in range(const.N_CHANNELS)] for n in current_node.connected_nodes}
                 line_label = node + neigh
                 current_node.successive[line_label] = self.lines[line_label]
                 self.lines[line_label].successive[node] = current_node
@@ -278,7 +289,6 @@ class Network:
 
     # fill the value of snr and latency in a list of Connection objects
     def stream(self, connections, filter_by_snr=False):
-        lines = self.lines
         for conn in connections:
             if filter_by_snr:
                 found_path = self.find_best_snr(conn.input, conn.output)
@@ -287,10 +297,10 @@ class Network:
 
             # check if there are available paths
             if found_path is None:
-                conn.latency = 0
-                conn.snr = None
+                conn.latency = None
+                conn.snr = 0
                 continue
-
+            print(found_path)
             # Manually unpack the result in order to handle the None case
             channel = found_path[1]
             found_path = found_path[0]
@@ -302,21 +312,13 @@ class Network:
             sig = self.propagate(sig)
 
             # Build a new route space datastructure
-            route_space = []
-            rs = self.route_space
-            for path in rs.paths:
-                path_str = path.replace("->", "")
-                ch_availability = self.__return_path_availability(path_str)
-                route_space.append({**{
-                    "paths": path
-                }, **{
-                    f"Ch{i + 1}": ch_availability[i] for i in range(const.N_CHANNELS)
-                }})
-            self._route_space = pd.DataFrame(route_space)
+            self.__update_route_space()
 
             # Update the values in connection
             conn.latency = sig.latency
             conn.snr = su.snr(sig.signal_power, sig.noise_power)
+        # Reset the network occupation
+        self.reset_network_occupacy()
 
     # Draw a graphical representation of the network
     def draw(self):
@@ -367,37 +369,6 @@ class Network:
         self._weighted_paths = pd.DataFrame(weighted_paths)
         self._route_space = pd.DataFrame(route_space)
 
-    # This method perform the logical and operation between the switching matrix of the traversed switching nodes
-    # and the availability matrix of the traversed lines
-    def __return_path_availability(self, path):
-        availability = [True for i in range(const.N_CHANNELS)]
-        path_len = len(path)
-        for i in range(path_len-1):
-            if 0 < i < (path_len - 1):
-                availability = np.logical_and(availability, self.nodes[path[i]].switching_matrix[path[i-1]][path[i+1]])
-            availability = np.logical_and(availability, self.lines[path[i]+path[i+1]].free)
-        return availability
-
-    def __select_first_available_path(self, av_paths):
-        count = 0
-        channel = 0
-        for path in av_paths:
-            path_state = self.route_space[(self.route_space.paths == path)]
-            # check if the path is free
-            for c in range(1, const.N_CHANNELS + 1):
-                if path_state[f"Ch{c}"].values[0]:
-                    channel = c
-                    break
-
-            if channel > 0:
-                # stop searching since paths are sorted
-                break
-            count += 1
-
-        if channel > 0:
-            return av_paths[count], channel
-        return None
-
     # find the path with best snr in the precalculated weighted graph
     def find_best_snr(self, source, dest):
         if self.weighted_paths.empty:
@@ -427,6 +398,67 @@ class Network:
         paths = paths.sort_values(by=["latency"])
         av_paths = paths.paths.values
         return self.__select_first_available_path(av_paths)
+
+    # This function reset the switching matrices and the occupacy of the lines
+    def reset_network_occupacy(self):
+        # Revert the switching matrix of all the nodes
+        for node in self.nodes:
+            self.nodes[node].switching_matrix = copy.deepcopy(self._switching_matrices[node])
+        # Revert the occupation of the lines
+        for line in self.lines:
+            self.lines[line].free = [1] * const.N_CHANNELS
+        self.__update_route_space()
+
+    # #
+    # Function utils
+    ##
+
+    # This method perform the logical and operation between the switching matrix of the traversed switching nodes
+    # and the availability matrix of the traversed lines
+    def __return_path_availability(self, path):
+        availability = [1 for i in range(const.N_CHANNELS)]
+        path_len = len(path)
+        for i in range(path_len - 1):
+            if 0 < i < (path_len - 1):
+                availability = np.multiply(availability, self.nodes[path[i]].switching_matrix[path[i - 1]][path[i + 1]])
+            availability = np.multiply(availability, self.lines[path[i] + path[i + 1]].free)
+        return availability
+
+    # This method is used in order to select the first path which is available in a given list
+    def __select_first_available_path(self, av_paths):
+        count = 0
+        channel = 0
+        for path in av_paths:
+            path_state = self.route_space[(self.route_space.paths == path)]
+            # check if the path is free
+            for c in range(1, const.N_CHANNELS + 1):
+                if path_state[f"Ch{c}"].values[0]:
+                    channel = c
+                    break
+
+            if channel > 0:
+                # stop searching since paths are sorted
+                break
+            count += 1
+
+        if channel > 0:
+            return av_paths[count], channel
+        return None
+
+    # This function update the route space according to the current values of switching matrices
+    # and availability of the channels of the line
+    def __update_route_space(self):
+        route_space = []
+        rs = self.route_space
+        for path in rs.paths:
+            path_str = path.replace("->", "")
+            ch_availability = self.__return_path_availability(path_str)
+            route_space.append({**{
+                "paths": path
+            }, **{
+                f"Ch{i + 1}": ch_availability[i] for i in range(const.N_CHANNELS)
+            }})
+        self._route_space = pd.DataFrame(route_space)
 
     @property
     def nodes(self):
