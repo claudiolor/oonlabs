@@ -8,7 +8,7 @@ class SignalUtils:
 
     @staticmethod
     def noise(signal_power, length):
-        return 1e-3 * signal_power * length
+        return 1e-9 * signal_power * length
 
     @staticmethod
     def latency(length):

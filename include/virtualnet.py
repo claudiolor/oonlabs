@@ -6,6 +6,7 @@ import copy
 
 from include.science_utils import SignalUtils as su
 from include.parameters import Parameters as const
+from include.parameters import SigConstants as sc
 
 
 class SignalInformation:
@@ -52,7 +53,7 @@ class SignalInformation:
 
     @latency.setter
     def latency(self, latency):
-        if latency >= 0:
+        if latency is None or latency >= 0:
             self._latency = latency
 
     @property
@@ -71,12 +72,13 @@ class Lightpath(SignalInformation):
 
 
 class Connection:
-    def __init__(self, input, output, signal_power, ):
+    def __init__(self, input, output, signal_power):
         self._input = input
         self._output = output
         self._signal_power = signal_power
         self._latency = 0
         self._snr = 0
+        self._bit_rate = 0
 
     @property
     def input(self):
@@ -98,14 +100,22 @@ class Connection:
     def snr(self):
         return self._snr
 
+    @property
+    def bit_rate(self):
+        return self._bit_rate
+
     @latency.setter
     def latency(self, latency):
-        if latency >= 0:
+        if latency is None or latency >= 0:
             self._latency = latency
 
     @snr.setter
     def snr(self, snr):
         self._snr = snr
+
+    @bit_rate.setter
+    def bit_rate(self, bit_rate):
+        self._bit_rate = bit_rate
 
 
 class Node:
@@ -113,6 +123,11 @@ class Node:
         self._label = label
         self._position = input_dict["position"]
         self._connected_nodes = input_dict["connected_nodes"]
+        if "transceiver" in input_dict and \
+                (input_dict["transceiver"] == const.FLEX_RATE_TRANS or input_dict["transceiver"] == const.SHANNON_TRANS):
+            self._transceiver = input_dict["transceiver"]
+        else:
+            self._transceiver = const.FIXED_RATE_TRANS
         self._switching_matrix = {}
         self._successive = {}
 
@@ -169,6 +184,14 @@ class Node:
     @switching_matrix.setter
     def switching_matrix(self, switching_matrix):
         self._switching_matrix = switching_matrix
+
+    @property
+    def transceiver(self):
+        return self._transceiver
+
+    @transceiver.setter
+    def transceiver(self, transceiver):
+        self.transceiver = transceiver
 
 
 class Line:
@@ -239,7 +262,7 @@ class Network:
         for node in loaded_nodes:
             current_node = loaded_nodes[node]
             # create and append the new node in the dictionary
-            self._nodes[node] = Node(node, current_node);
+            self._nodes[node] = Node(node, current_node)
             self._switching_matrices[node] = current_node["switching_matrix"]
             # create a link for each adiacency
             for n in current_node["connected_nodes"]:
@@ -296,11 +319,16 @@ class Network:
                 found_path = self.find_best_latency(conn.input, conn.output)
 
             # check if there are available paths
-            if found_path is None:
+            source_node = self.nodes[conn.input]
+            bit_rate = self.calculate_bit_rate(found_path[0], source_node.transceiver) if found_path is not None else 0
+            # if the bit rate is equal to 0 the path could be not available or the
+            # we didn't reach the minimum GSNR requirement
+            if bit_rate == 0:
                 conn.latency = None
                 conn.snr = 0
+                conn.bit_rate = 0
                 continue
-            print(found_path)
+
             # Manually unpack the result in order to handle the None case
             channel = found_path[1]
             found_path = found_path[0]
@@ -317,6 +345,7 @@ class Network:
             # Update the values in connection
             conn.latency = sig.latency
             conn.snr = su.snr(sig.signal_power, sig.noise_power)
+            conn.bit_rate = bit_rate
         # Reset the network occupation
         self.reset_network_occupacy()
 
@@ -409,9 +438,37 @@ class Network:
             self.lines[line].free = [1] * const.N_CHANNELS
         self.__update_route_space()
 
+    # Work out the bit rate of a specific path
+    def calculate_bit_rate(self, path, strategy):
+        # Get the path data from the weighed paths dataframe
+        wp = self.weighted_paths
+        path_data = wp[(wp.paths == path)]
+        if path_data.empty:
+            return 0
+        snr = path_data.snr.values[0]
+
+        # Check the strategy to be used
+        if strategy == const.FIXED_RATE_TRANS:
+            if snr >= (4*sc.BERt*(sc.Rs/sc.Bn)):
+                return 100e9
+            else:
+                return 0
+        elif strategy == const.FLEX_RATE_TRANS:
+            if snr < (f4ber := 4*sc.BERt*(sc.Rs/sc.Bn)):
+                return 0
+            elif f4ber <= snr < (f7ber := 7*sc.BERt*(sc.Rs/sc.Bn)):
+                return 100e9
+            elif f7ber <= snr < (f80_3ber := (80/3)*sc.BERt*(sc.Rs/sc.Bn)):
+                return 200e9
+            elif snr >= f80_3ber:
+                return 400e9
+        elif strategy == const.SHANNON_TRANS:
+            return 2*sc.Rs*np.log2(1+(snr*(sc.Bn/sc.Rs)))
+        return 0
+
     # #
     # Function utils
-    ##
+    # #
 
     # This method perform the logical and operation between the switching matrix of the traversed switching nodes
     # and the availability matrix of the traversed lines
