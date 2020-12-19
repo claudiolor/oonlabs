@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import copy
 
 from include.science_utils import SignalUtils as su
+from include.science_utils import TransceiverCharacterization as tc
 from include.parameters import Parameters as const
 from include.parameters import SigConstants as sc
 
@@ -449,21 +450,21 @@ class Network:
 
         # Check the strategy to be used
         if strategy == const.FIXED_RATE_TRANS:
-            if snr >= (4*sc.BERt*(sc.Rs/sc.Bn)):
+            if snr >= tc.fixed_rate100(sc.BERt, sc.Rs, sc.Bn):
                 return 100e9
             else:
                 return 0
         elif strategy == const.FLEX_RATE_TRANS:
-            if snr < (f4ber := 4*sc.BERt*(sc.Rs/sc.Bn)):
+            if snr < (fr0 := tc.flex_rate0(sc.BERt, sc.Rs, sc.Bn)):
                 return 0
-            elif f4ber <= snr < (f7ber := 7*sc.BERt*(sc.Rs/sc.Bn)):
+            elif fr0 <= snr < (fr100 := tc.flex_rate100(sc.BERt, sc.Rs, sc.Bn)):
                 return 100e9
-            elif f7ber <= snr < (f80_3ber := (80/3)*sc.BERt*(sc.Rs/sc.Bn)):
+            elif fr100 <= snr < (fr200 := tc.flex_rate200(sc.BERt, sc.Rs, sc.Bn)):
                 return 200e9
-            elif snr >= f80_3ber:
+            elif snr >= fr200:
                 return 400e9
         elif strategy == const.SHANNON_TRANS:
-            return 2*sc.Rs*np.log2(1+(snr*(sc.Bn/sc.Rs)))
+            return tc.shannon(sc.Rs, sc.Bn, snr)
         return 0
 
     # #
