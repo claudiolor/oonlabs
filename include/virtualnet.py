@@ -67,8 +67,10 @@ class SignalInformation:
 
 
 class Lightpath(SignalInformation):
-    def __init__(self, signal_power, path, channel):
+    def __init__(self, signal_power, path, channel, Rs=0, df=0):
         self.channel = channel
+        self.Rs = sc.Rs if Rs == 0 else Rs
+        self.df = sc.df if df == 0 else df
         super(Lightpath, self).__init__(signal_power, path)
 
 
@@ -196,9 +198,17 @@ class Node:
 
 
 class Line:
-    def __init__(self, label, length):
+    def __init__(self, label, length, gain=None, noise_figure=None):
         self._label = label
         self._length = length
+        # In order to take track only the in-line amplifiers
+        # the result of the division is rounded up and subtracted by 1
+        # if for example the fiber is 240KM and we want an amplifier every 80KM
+        # we will have 240KM/80KM = 3-1 = 2 in-line amplifiers
+        # one at KM80 and the other at KM160
+        self._n_amplifiers = np.ceil(self.length / sc.KmPerA) - 1
+        self._gain = sc.AdefGain if gain is None else gain
+        self._noise_figure = sc.NF if noise_figure is None else noise_figure
         self._successive = {}
         self._free = [1] * const.N_CHANNELS
 
@@ -207,6 +217,16 @@ class Line:
 
     def noise_generation(self, signal_power):
         return su.noise(signal_power, self.length)
+
+    def ase_generation(self):
+        # n_amplifiers is the number of in-line amplifiers which are in the line
+        # there is also the need to consider in the ASE calculation the booster and the preamp, so other 2 amplifiers
+        return su.ase_noise(self.gain, self.noise_figure, self.n_amplifiers+2)
+
+    def nli_generation(self, signal_power, Rs, df):
+        eta_nli = su.eta_nli(Rs, df)
+        # The number of fiber spans is equal to the number of inline amplifiers + 1
+        return su.nli_noise(eta_nli, signal_power, self.n_amplifiers+1)
 
     def propagate(self, signal):
         node = self.successive[signal.path[0]]
@@ -224,10 +244,6 @@ class Line:
     def label(self):
         return self._label
 
-    @label.setter
-    def label(self, label):
-        self._label = label
-
     @property
     def length(self):
         return self._length
@@ -236,13 +252,33 @@ class Line:
     def successive(self):
         return self._successive
 
+    @property
+    def free(self):
+        return self._free
+
+    @property
+    def gain(self):
+        return self._gain
+
+    @property
+    def noise_figure(self):
+        return self._noise_figure
+
+    @property
+    def n_amplifiers(self):
+        return self._n_amplifiers
+
+    @gain.setter
+    def gain(self, gain):
+        self._gain = gain
+
     @successive.setter
     def successive(self, successive):
         self._successive = successive
 
-    @property
-    def free(self):
-        return self._free
+    @label.setter
+    def label(self, label):
+        self._label = label
 
     @free.setter
     def free(self, free):

@@ -1,5 +1,7 @@
 import numpy as np
 import scipy.special as scys
+from include.parameters import SigConstants as sc
+from include.parameters import Parameters as const
 
 
 class SignalUtils:
@@ -15,6 +17,23 @@ class SignalUtils:
     def latency(length):
         LIGHTSPEED2_3 = 199861638.67
         return length / LIGHTSPEED2_3
+
+    @staticmethod
+    def ase_noise(G, NF, Namp):
+        return Namp * (sc.h * sc.CBcenter * sc.Bn * NF * (G-1))
+
+    @staticmethod
+    def eta_nli(Rs, df):
+        Leff = 1 / (2 * sc.alpha)
+        return (16 / (27 * np.pi)) * \
+               np.log(((np.pi ** 2) / 2) *
+                      ((sc.beta2 * (Rs ** 2))/sc.alpha) *
+                      (const.N_CHANNELS ** (2*(Rs/df)))) * \
+               (sc.alpha/sc.beta2) * (((sc.gamma ** 2) * (Leff ** 2)) / (Rs ** 3))
+
+    @staticmethod
+    def nli_noise(eta_nli, ch_power, Nspan):
+        return eta_nli * (ch_power ** 3) * Nspan * sc.Bn
 
 
 class TransceiverCharacterization:
