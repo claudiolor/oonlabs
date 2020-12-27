@@ -11,11 +11,12 @@ from include.parameters import SigConstants as sc
 
 
 class SignalInformation:
-    def __init__(self, signal_power, path):
-        self._signal_power = signal_power
+    def __init__(self, path):
+        self._signal_power = 0
         self._path = path
         self._noise_power = 0
         self._latency = 0
+        self._isnr = 0
 
     def signal_power_increment(self, increment):
         self.signal_power += increment
@@ -26,6 +27,9 @@ class SignalInformation:
     def latency_increment(self, increment):
         self.latency += increment
 
+    def isnr_increment(self, noise):
+        self.isnr += noise / self._signal_power
+
     def cross_node(self):
         self.path = self.path[1:]
 
@@ -34,51 +38,72 @@ class SignalInformation:
     def signal_power(self):
         return self._signal_power
 
+    @property
+    def noise_power(self):
+        return self._noise_power
+
+    @property
+    def latency(self):
+        return self._latency
+
+    @property
+    def path(self):
+        return self._path
+
+    @property
+    def isnr(self):
+        return self._isnr
+
     @signal_power.setter
     def signal_power(self, signal_power):
         if signal_power >= 0:
             self._signal_power = signal_power
-
-    @property
-    def noise_power(self):
-        return self._noise_power
 
     @noise_power.setter
     def noise_power(self, noise_power):
         if noise_power >= 0:
             self._noise_power = noise_power
 
-    @property
-    def latency(self):
-        return self._latency
-
     @latency.setter
     def latency(self, latency):
         if latency is None or latency >= 0:
             self._latency = latency
 
-    @property
-    def path(self):
-        return self._path
-
     @path.setter
     def path(self, path):
         self._path = path
 
+    @isnr.setter
+    def isnr(self, isnr):
+        self._isnr = isnr
+
 
 class Lightpath(SignalInformation):
-    def __init__(self, signal_power, path, channel, Rs=0, df=0):
-        self.channel = channel
-        self.Rs = sc.Rs if Rs == 0 else Rs
-        self.df = sc.df if df == 0 else df
-        super(Lightpath, self).__init__(signal_power, path)
+    def __init__(self, path, channel=None, Rs=0, df=0):
+        if channel is not None:
+            self._channel = channel
+        self._Rs = sc.Rs if Rs == 0 else Rs
+        self._df = sc.df if df == 0 else df
+        super(Lightpath, self).__init__(path)
+
+    @property
+    def channel(self):
+        return self._channel
+
+    @property
+    def Rs(self):
+        return self._Rs
+
+    @property
+    def df(self):
+        return self._df
 
 
 class Connection:
-    def __init__(self, input, output, signal_power):
+    def __init__(self, input, output):
         self._input = input
         self._output = output
-        self._signal_power = signal_power
+        self._signal_power = 0
         self._latency = 0
         self._snr = 0
         self._bit_rate = 0
@@ -151,6 +176,8 @@ class Node:
                     sm_row[channel-1] = 0
                 if channel < const.N_CHANNELS-1:
                     sm_row[channel+1] = 0
+            # Set the optimized launch power
+            signal.signal_power = line.optimized_launch_power(signal.Rs, signal.df)
             # propagate the signal to the right line
             line.propagate(signal)
         return signal
@@ -168,29 +195,29 @@ class Node:
     def connected_nodes(self):
         return self._connected_nodes
 
-    @connected_nodes.setter
-    def connected_nodes(self, connected_nodes):
-        self._connected_nodes = connected_nodes
-
     @property
     def successive(self):
         return self._successive
 
-    @successive.setter
-    def successive(self, successive):
-        self._successive = successive
+    @property
+    def transceiver(self):
+        return self._transceiver
 
     @property
     def switching_matrix(self):
         return self._switching_matrix
 
+    @successive.setter
+    def successive(self, successive):
+        self._successive = successive
+
+    @connected_nodes.setter
+    def connected_nodes(self, connected_nodes):
+        self._connected_nodes = connected_nodes
+
     @switching_matrix.setter
     def switching_matrix(self, switching_matrix):
         self._switching_matrix = switching_matrix
-
-    @property
-    def transceiver(self):
-        return self._transceiver
 
     @transceiver.setter
     def transceiver(self, transceiver):
@@ -215,8 +242,8 @@ class Line:
     def latency_generation(self):
         return su.latency(self.length)
 
-    def noise_generation(self, signal_power):
-        return su.noise(signal_power, self.length)
+    def noise_generation(self, signal_power, Rs, df):
+        return self.ase_generation() + self.nli_generation(signal_power, Rs, df)
 
     def ase_generation(self):
         # n_amplifiers is the number of in-line amplifiers which are in the line
@@ -232,13 +259,22 @@ class Line:
         node = self.successive[signal.path[0]]
         # work out the latency and the noise introduced by the current line
         signal.latency_increment(self.latency_generation())
-        signal.signal_noise_increment(self.noise_generation(signal.signal_power))
+        noise = self.noise_generation(signal.signal_power,
+                                      signal.Rs,
+                                      signal.df)
+        signal.signal_noise_increment(noise)
+        signal.isnr_increment(noise)
         # set the channel as occupied if the passed object is a lighpath
         if hasattr(signal, "channel"):
             self.free[signal.channel-1] = 0
         # propagate the signal on the node on the other side of the line
         node.propagate(signal, previous_node=self.label[0])
         return signal
+
+    def optimized_launch_power(self, Rs, df):
+        eta_nli = su.eta_nli(Rs, df)
+        # The number of fiber spans is equal to the number of inline amplifiers + 1
+        return su.optimal_launch_power(eta_nli, self.ase_generation(), self.n_amplifiers+1)
 
     @property
     def label(self):
@@ -373,7 +409,7 @@ class Network:
             found_path_str = found_path.replace("->", "")
 
             # Start the signal propagation and lock the lines
-            sig = Lightpath(conn.signal_power, found_path_str, channel)
+            sig = Lightpath(found_path_str, channel)
             sig = self.propagate(sig)
 
             # Build a new route space datastructure
@@ -381,7 +417,7 @@ class Network:
 
             # Update the values in connection
             conn.latency = sig.latency
-            conn.snr = su.snr(sig.signal_power, sig.noise_power)
+            conn.snr = su.snr(sig.isnr)
             conn.bit_rate = bit_rate
         # Reset the network occupation
         self.reset_network_occupacy()
@@ -413,14 +449,14 @@ class Network:
                         for node in path:
                             path_string += node + "->"
                         # Create a new signal
-                        sig = SignalInformation(1e-3, path)
+                        sig = Lightpath(path)
                         sig_info = self.propagate(sig)
                         curr_path = path_string[:-2]
                         weighted_paths.append({
                             "paths": curr_path,
                             "latency": sig_info.latency,
                             "noise": sig_info.noise_power,
-                            "snr": su.snr(sig_info.signal_power, sig_info.noise_power)
+                            "snr": su.snr(sig_info.isnr)
                         })
 
                         # Add record in route space for line availability

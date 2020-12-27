@@ -36,7 +36,7 @@ if __name__ == "__main__":
             n2 = random.choice(nodes)
             while n1 == n2:
                 n2 = random.choice(nodes)
-            connections.append(vn.Connection(n1, n2, 1))
+            connections.append(vn.Connection(n1, n2))
         if argc == 5:
             out_filename = sys.argv[4]
             out_connections = np.array(connections)

@@ -6,12 +6,8 @@ from include.parameters import Parameters as const
 
 class SignalUtils:
     @staticmethod
-    def snr(signal_power, noise_power):
-        return 10 * np.log10(signal_power / noise_power)
-
-    @staticmethod
-    def noise(signal_power, length):
-        return 1e-9 * signal_power * length
+    def snr(isnr):
+        return 10 * np.log10(1 / isnr)
 
     @staticmethod
     def latency(length):
@@ -34,6 +30,12 @@ class SignalUtils:
     @staticmethod
     def nli_noise(eta_nli, ch_power, Nspan):
         return eta_nli * (ch_power ** 3) * Nspan * sc.Bn
+
+    @staticmethod
+    def optimal_launch_power(eta_nli, Pase, Nspan):
+        # In order to have the optimal launch power
+        # Pnli = Pase / 2
+        return (Pase / (2 * eta_nli * sc.Bn * Nspan)) ** (1/3)
 
 
 class TransceiverCharacterization:
