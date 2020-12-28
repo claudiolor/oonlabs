@@ -7,6 +7,10 @@ from include.parameters import Parameters as const
 class SignalUtils:
     @staticmethod
     def snr(isnr):
+        return 1 / isnr
+
+    @staticmethod
+    def snr_db(isnr):
         return 10 * np.log10(1 / isnr)
 
     @staticmethod

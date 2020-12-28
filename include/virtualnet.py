@@ -8,6 +8,7 @@ from include.science_utils import SignalUtils as su
 from include.science_utils import TransceiverCharacterization as tc
 from include.parameters import Parameters as const
 from include.parameters import SigConstants as sc
+from include.parameters import ConnectionStatus as cs
 
 
 class SignalInformation:
@@ -107,6 +108,11 @@ class Connection:
         self._latency = 0
         self._snr = 0
         self._bit_rate = 0
+        self._status = cs.PENDING
+
+    @property
+    def status(self):
+        return self._status
 
     @property
     def input(self):
@@ -131,6 +137,10 @@ class Connection:
     @property
     def bit_rate(self):
         return self._bit_rate
+
+    @status.setter
+    def status(self, status):
+        self._status = status
 
     @latency.setter
     def latency(self, latency):
@@ -393,13 +403,10 @@ class Network:
 
             # check if there are available paths
             source_node = self.nodes[conn.input]
-            bit_rate = self.calculate_bit_rate(found_path[0], source_node.transceiver) if found_path is not None else 0
             # if the bit rate is equal to 0 the path could be not available or the
             # we didn't reach the minimum GSNR requirement
-            if bit_rate == 0:
-                conn.latency = None
-                conn.snr = 0
-                conn.bit_rate = 0
+            if found_path is None:
+                self.__abort_connection(conn, cs.BLOCKING_EVENT)
                 continue
 
             # Manually unpack the result in order to handle the None case
@@ -410,6 +417,11 @@ class Network:
 
             # Start the signal propagation and lock the lines
             sig = Lightpath(found_path_str, channel)
+            bit_rate = self.calculate_bit_rate(sig, source_node.transceiver)
+            # Check if we don't reach the minimum SNR
+            if bit_rate == 0:
+                self.__abort_connection(conn, cs.LOW_SNR)
+                continue
             sig = self.propagate(sig)
 
             # Build a new route space datastructure
@@ -417,8 +429,9 @@ class Network:
 
             # Update the values in connection
             conn.latency = sig.latency
-            conn.snr = su.snr(sig.isnr)
+            conn.snr = su.snr_db(sig.isnr)
             conn.bit_rate = bit_rate
+            conn.status = cs.DEPLOYED
         # Reset the network occupation
         self.reset_network_occupacy()
 
@@ -512,9 +525,10 @@ class Network:
         self.__update_route_space()
 
     # Work out the bit rate of a specific path
-    def calculate_bit_rate(self, path, strategy):
+    def calculate_bit_rate(self, lightpath, strategy):
         # Get the path data from the weighed paths dataframe
         wp = self.weighted_paths
+        path = "->".join([p for p in lightpath.path])
         path_data = wp[(wp.paths == path)]
         if path_data.empty:
             return 0
@@ -522,26 +536,33 @@ class Network:
 
         # Check the strategy to be used
         if strategy == const.FIXED_RATE_TRANS:
-            if snr >= tc.fixed_rate100(sc.BERt, sc.Rs, sc.Bn):
+            if snr >= tc.fixed_rate100(sc.BERt, lightpath.Rs, sc.Bn):
                 return 100e9
             else:
                 return 0
         elif strategy == const.FLEX_RATE_TRANS:
-            if snr < (fr0 := tc.flex_rate0(sc.BERt, sc.Rs, sc.Bn)):
+            if snr < (fr0 := tc.flex_rate0(sc.BERt, lightpath.Rs, sc.Bn)):
                 return 0
-            elif fr0 <= snr < (fr100 := tc.flex_rate100(sc.BERt, sc.Rs, sc.Bn)):
+            elif fr0 <= snr < (fr100 := tc.flex_rate100(sc.BERt, lightpath.Rs, sc.Bn)):
                 return 100e9
-            elif fr100 <= snr < (fr200 := tc.flex_rate200(sc.BERt, sc.Rs, sc.Bn)):
+            elif fr100 <= snr < (fr200 := tc.flex_rate200(sc.BERt, lightpath.Rs, sc.Bn)):
                 return 200e9
             elif snr >= fr200:
                 return 400e9
         elif strategy == const.SHANNON_TRANS:
-            return tc.shannon(sc.Rs, sc.Bn, snr)
+            return tc.shannon(lightpath.Rs, sc.Bn, snr)
         return 0
 
     # #
     # Function utils
     # #
+
+    # This method sets the default values for a blocking event in a Connection object
+    def __abort_connection(self, conn, reason):
+        conn.latency = None
+        conn.snr = 0
+        conn.bit_rate = 0
+        conn.status = reason
 
     # This method perform the logical and operation between the switching matrix of the traversed switching nodes
     # and the availability matrix of the traversed lines

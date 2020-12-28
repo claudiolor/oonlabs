@@ -7,6 +7,13 @@ class Parameters:
     SHANNON_TRANS = "shannon"
 
 
+class ConnectionStatus:
+    DEPLOYED = 0
+    PENDING = 1
+    BLOCKING_EVENT = 2
+    LOW_SNR = 3
+
+
 class SigConstants:
     # Noise bandwidth
     Bn = 12.5e9
@@ -36,4 +43,3 @@ class SigConstants:
     beta2 = 2.13e-26
     # Gamma value of the fiber in (W*m)^-1
     gamma = 1.27e-3
-

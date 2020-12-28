@@ -52,6 +52,8 @@ if __name__ == "__main__":
     tot_snr = 0
     tot_lat = 0
     tot_bit_rate = 0
+    tot_low_snr = 0
+    tot_blocking_events = 0
     conn_res_list = []
     for conn in connections:
         if conn.latency is not None:
@@ -63,12 +65,21 @@ if __name__ == "__main__":
                                                     "latency": conn.latency,
                                                     "bit_rate": conn.bit_rate
                                                     })
+        else:
+            if conn.status == cs.LOW_SNR:
+                tot_low_snr += 1
+            elif conn.status == cs.BLOCKING_EVENT:
+                tot_blocking_events += 1
+
     connection_data = pd.DataFrame(conn_res_list)
 
     print(f"Avg(snr): {tot_snr/len(connection_data)}")
     print(f"Avg(lat): {tot_lat/len(connection_data)}")
     print(f"Avg(bit_rate): {tot_bit_rate/len(connection_data)}")
+    print(f"\nN. blocking events: {tot_blocking_events}")
+    print(f"N. too low snr: {tot_low_snr}")
     print(f"N connections: {len(connection_data)}")
+
     plt.subplot(131)
     plt.xticks([])
     plt.xlabel("SNR")
