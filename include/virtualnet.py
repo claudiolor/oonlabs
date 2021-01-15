@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import copy
+import random
+import logging
 
 from include.science_utils import SignalUtils as su
 from include.science_utils import TransceiverCharacterization as tc
@@ -394,7 +396,7 @@ class Network:
         return found_path
 
     # fill the value of snr and latency in a list of Connection objects
-    def stream(self, connections, filter_by_snr=False):
+    def stream(self, connections, filter_by_snr=False, reset_network=True):
         for conn in connections:
             if filter_by_snr:
                 found_path = self.find_best_snr(conn.input, conn.output)
@@ -423,6 +425,7 @@ class Network:
                 self.__abort_connection(conn, cs.LOW_SNR)
                 continue
             sig = self.propagate(sig)
+            logging.info(f"DEPLOYED: {found_path}")
 
             # Build a new route space datastructure
             self.__update_route_space()
@@ -433,10 +436,36 @@ class Network:
             conn.bit_rate = bit_rate
             conn.status = cs.DEPLOYED
         # Reset the network occupation
+        if reset_network:
+            self.reset_network_occupacy()
+
+    def deploy_traffic_matrix(self, matrix, filter_by_snr=False):
+        connections = []
+        while len(matrix) > 0:
+            n1 = random.choice(list(matrix.keys()))
+            n2 = random.choice(list(matrix[n1].keys()))
+            c = Connection(n1, n2)
+            # Deploy the traffic
+            self.stream([c], filter_by_snr=filter_by_snr, reset_network=False)
+            connections.append(c)
+            if c.status == cs.DEPLOYED:
+                # Check if the deployed traffic satisfy the request
+                matrix[n1][n2] -= c.bit_rate
+                # Remove the elements if we reached the maximum
+                if matrix[n1][n2] <= 0:
+                    matrix[n1].pop(n2)
+            else:
+                # Remove the element if it was not possible to deploy the connection
+                matrix[n1].pop(n2)
+            # Check if deployed all the connections starting from n1
+            if len(matrix[n1]) == 0:
+                matrix.pop(n1)
         self.reset_network_occupacy()
+        return connections
 
     # Draw a graphical representation of the network
-    def draw(self):
+    def draw(self, show=True):
+        plt.figure()
         for node in self.nodes:
             current_node = self.nodes[node]
             pos = current_node.position
@@ -445,7 +474,8 @@ class Network:
             for n in current_node.connected_nodes:
                 npos = self.nodes[n].position
                 plt.plot([pos[0], npos[0]], [pos[1], npos[1]], "g")
-        plt.show()
+        if show:
+            plt.show()
 
     # Generate a weighted graph of the network
     def generate_data_structures(self):
@@ -559,6 +589,7 @@ class Network:
 
     # This method sets the default values for a blocking event in a Connection object
     def __abort_connection(self, conn, reason):
+        logging.warning(f"{'BLOCKING EVENT' if reason == cs.BLOCKING_EVENT else 'LOW SNR'}: {conn.input} -> {conn.output}")
         conn.latency = None
         conn.snr = 0
         conn.bit_rate = 0
