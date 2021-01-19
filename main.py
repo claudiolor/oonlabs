@@ -89,7 +89,7 @@ if __name__ == "__main__":
         if args.output is not None:
             export_connections(connections)
 
-        net.stream(connections, filter_by_snr=args.best_latency)
+        net.stream(connections, filter_by_snr=args.best_latency, reset_network=False)
     elif mode == "-p":
         n_connection = int(args.pair[2])
         n1 = args.pair[0]
@@ -101,15 +101,15 @@ if __name__ == "__main__":
         for i in range(n_connection):
             connections.append(vn.Connection(n1, n2))
 
-        net.stream(connections, filter_by_snr=args.best_latency)
+        net.stream(connections, filter_by_snr=args.best_latency, reset_network=False)
     elif mode == "-f":
         connections = np.load(args.file, allow_pickle=True).tolist()
 
-        net.stream(connections, filter_by_snr=args.best_latency)
+        net.stream(connections, filter_by_snr=args.best_latency, reset_network=False)
     elif mode == "-m":
         M = int(args.matrix)
         traffic_matrix = {n : {n1: M*100e9 for n1 in nodes if n != n1} for n in nodes}
-        connections = net.deploy_traffic_matrix(traffic_matrix, filter_by_snr=args.best_latency)
+        connections = net.deploy_traffic_matrix(traffic_matrix, filter_by_snr=args.best_latency, reset_network=False)
         if args.output is not None:
             export_connections(connections)
 

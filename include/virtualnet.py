@@ -1,7 +1,9 @@
 import json
 import numpy as np
 import pandas as pd
+import matplotlib as mpl
 import matplotlib.pyplot as plt
+import networkx as nx
 import copy
 import random
 import logging
@@ -288,6 +290,9 @@ class Line:
         # The number of fiber spans is equal to the number of inline amplifiers + 1
         return su.optimal_launch_power(eta_nli, self.ase_generation(), self.n_amplifiers+1)
 
+    def spectral_congestion(self):
+        return 1 - (np.sum(self._free) / const.N_CHANNELS)
+
     @property
     def label(self):
         return self._label
@@ -439,7 +444,7 @@ class Network:
         if reset_network:
             self.reset_network_occupacy()
 
-    def deploy_traffic_matrix(self, matrix, filter_by_snr=False):
+    def deploy_traffic_matrix(self, matrix, filter_by_snr=False, reset_network=False):
         connections = []
         while len(matrix) > 0:
             n1 = random.choice(list(matrix.keys()))
@@ -460,20 +465,47 @@ class Network:
             # Check if deployed all the connections starting from n1
             if len(matrix[n1]) == 0:
                 matrix.pop(n1)
-        self.reset_network_occupacy()
+
+        if reset_network:
+            self.reset_network_occupacy()
+
         return connections
 
     # Draw a graphical representation of the network
     def draw(self, show=True):
         plt.figure()
-        for node in self.nodes:
-            current_node = self.nodes[node]
-            pos = current_node.position
-            plt.plot(pos[0], pos[1], "bo", markersize=10)
-            plt.text(pos[0], pos[1]+30000, node)
-            for n in current_node.connected_nodes:
-                npos = self.nodes[n].position
-                plt.plot([pos[0], npos[0]], [pos[1], npos[1]], "g")
+        G = nx.DiGraph()
+        color_map = mpl.colors.LinearSegmentedColormap.from_list("", ["green", "yellow", "red"], 10, 1)
+
+        G.add_nodes_from(self.nodes.keys())
+        pos = {n: tuple(self.nodes[n].position) for n in self.nodes}
+        edges1 = {}
+        edges2 = {}
+        for line in self.lines:
+            if line not in edges2:
+                edges1[line] = self.lines[line].spectral_congestion()
+                inv_line = line[-1]+line[0]
+                edges2[inv_line] = self.lines[inv_line].spectral_congestion()
+
+        # Show bar diagram
+        plt.subplot(2, 1, 1)
+        plt.bar(list(edges1.keys()) + list(edges2.keys()), list(edges1.values()) + list(edges2.values()))
+
+        # Show first network
+        plt.subplot(2, 2, 3)
+        nx.draw_networkx_nodes(G, pos)
+        nx.draw_networkx_labels(G, pos)
+        drawn_edges = nx.draw_networkx_edges(G, pos, edges1.keys(), edge_color=edges1.values(), edge_cmap=color_map, edge_vmin=0, edge_vmax=1)
+        pc = mpl.collections.PatchCollection(drawn_edges, cmap=color_map)
+        plt.colorbar(pc)
+
+        # Show second network
+        plt.subplot(2, 2, 4)
+        nx.draw_networkx_nodes(G, pos)
+        nx.draw_networkx_labels(G, pos)
+        nx.draw_networkx_edges(G, pos, edges2.keys(), edge_color=edges2.values(), edge_cmap=color_map, edge_vmin=0, edge_vmax=1)
+        plt.colorbar(pc)
+
         if show:
             plt.show()
 
@@ -657,10 +689,3 @@ class Network:
     @property
     def route_space(self):
         return self._route_space
-
-
-
-
-
-
-
