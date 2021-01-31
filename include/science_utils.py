@@ -15,8 +15,7 @@ class SignalUtils:
 
     @staticmethod
     def latency(length):
-        LIGHTSPEED2_3 = 199861638.67
-        return length / LIGHTSPEED2_3
+        return length / sc.lightspeed2_3
 
     @staticmethod
     def ase_noise(G, NF, Namp):

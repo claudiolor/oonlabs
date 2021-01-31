@@ -33,6 +33,8 @@ class SigConstants:
     CBcenter = 193.414e12
     # Frequency spacing
     df = 50e9
+    # Speed of the light in the glass m/s
+    lightspeed2_3 = 199861638.67
 
     ##
     # Characteristic of the fiber

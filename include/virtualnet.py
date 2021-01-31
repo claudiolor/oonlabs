@@ -175,6 +175,7 @@ class Node:
 
     def propagate(self, signal, previous_node=None):
         path = signal.path
+        # If the length of the path is 1 we reached the destination node
         if len(path) > 1:
             line_label = path[:2]
             line = self.successive[line_label]
@@ -387,10 +388,14 @@ class Network:
         all_paths = [[] for i in range(len(self.nodes)-1)]
         found_path = []
         lines = self.lines.keys()
+        # The path with order to is coincident with the lines
         all_paths[0] = list(lines)
         # check if there is a direct link and add it to the available paths
         if source+dest in lines:
             found_path.append(source+dest)
+        # Collect all the paths which doesn't pass trough the same node twice
+        # starting from the all the paths with a grade less we take all the lines which starts from the
+        # ending  of the considered path, and which doesn't go to a node already present in the path
         for i in range(len(self.nodes)-2):
             for path in all_paths[i]:
                 all_paths[i + 1] += [path + line[1] for line in lines if ((path[-1] == line[0]) & (line[1] not in path))]
@@ -430,7 +435,7 @@ class Network:
                 self.__abort_connection(conn, cs.LOW_SNR)
                 continue
             sig = self.propagate(sig)
-            logging.info(f"DEPLOYED: {found_path}")
+            logging.info(f"DEPLOYED: {found_path} Ch. {channel}")
 
             # Build a new route space datastructure
             self.__update_route_space()
@@ -627,12 +632,14 @@ class Network:
         conn.bit_rate = 0
         conn.status = reason
 
-    # This method perform the logical and operation between the switching matrix of the traversed switching nodes
+    # This method perform the logical AND operation between the switching matrix of the traversed switching nodes
     # and the availability matrix of the traversed lines
     def __return_path_availability(self, path):
         availability = [1 for i in range(const.N_CHANNELS)]
         path_len = len(path)
         for i in range(path_len - 1):
+            # Perform the logical and with the switching matrix of only the switching nodes
+            # source and destination should not be considered
             if 0 < i < (path_len - 1):
                 availability = np.multiply(availability, self.nodes[path[i]].switching_matrix[path[i - 1]][path[i + 1]])
             availability = np.multiply(availability, self.lines[path[i] + path[i + 1]].free)
@@ -666,6 +673,7 @@ class Network:
         rs = self.route_space
         for path in rs.paths:
             path_str = path.replace("->", "")
+            # return the availability of the channels for the given path
             ch_availability = self.__return_path_availability(path_str)
             route_space.append({**{
                 "paths": path
